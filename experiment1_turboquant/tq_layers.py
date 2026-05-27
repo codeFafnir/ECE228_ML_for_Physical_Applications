@@ -67,6 +67,11 @@ class TQLinear(nn.Module):
         else:
             self.bias = None
 
+    @property
+    def weight(self) -> torch.Tensor:
+        # MultiheadAttention and other PyTorch internals access .weight directly
+        return self.tq.decompress(dtype=torch.float32)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         W = self.tq.decompress(dtype=x.dtype)
         return F.linear(x, W, self.bias)
@@ -114,6 +119,10 @@ class TQConv2d(nn.Module):
             self.bias = nn.Parameter(conv.bias.data.clone())
         else:
             self.bias = None
+
+    @property
+    def weight(self) -> torch.Tensor:
+        return self.tq.decompress(dtype=torch.float32).view(self._weight_shape)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         W = self.tq.decompress(dtype=x.dtype).view(self._weight_shape)
@@ -163,6 +172,10 @@ class TQConvTranspose2d(nn.Module):
             self.bias = nn.Parameter(conv_t.bias.data.clone())
         else:
             self.bias = None
+
+    @property
+    def weight(self) -> torch.Tensor:
+        return self.tq.decompress(dtype=torch.float32).view(self._weight_shape)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         W = self.tq.decompress(dtype=x.dtype).view(self._weight_shape)
