@@ -73,7 +73,7 @@ class TQLinear(nn.Module):
         return self.tq.decompress(dtype=torch.float32)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        W = self.tq.decompress(dtype=x.dtype)
+        W = self.tq.decompress(dtype=x.dtype).to(x.device)
         return F.linear(x, W, self.bias)
 
     def extra_repr(self) -> str:
@@ -125,7 +125,7 @@ class TQConv2d(nn.Module):
         return self.tq.decompress(dtype=torch.float32).view(self._weight_shape)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        W = self.tq.decompress(dtype=x.dtype).view(self._weight_shape)
+        W = self.tq.decompress(dtype=x.dtype).view(self._weight_shape).to(x.device)
         return F.conv2d(x, W, self.bias,
                         self.stride, self.padding, self.dilation, self.groups)
 
@@ -178,7 +178,7 @@ class TQConvTranspose2d(nn.Module):
         return self.tq.decompress(dtype=torch.float32).view(self._weight_shape)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        W = self.tq.decompress(dtype=x.dtype).view(self._weight_shape)
+        W = self.tq.decompress(dtype=x.dtype).view(self._weight_shape).to(x.device)
         return F.conv_transpose2d(
             x, W, self.bias,
             self.stride, self.padding, self.output_padding,
