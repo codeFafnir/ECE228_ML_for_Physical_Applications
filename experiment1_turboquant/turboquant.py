@@ -231,7 +231,7 @@ class TurboQuantTensor:
             n_rotation_blocks=n_rotation_blocks,
         )
 
-    def decompress(self, dtype: torch.dtype = torch.float32) -> torch.Tensor:
+    def decompress(self, dtype: torch.dtype = torch.float32, device=None) -> torch.Tensor:
         """
         Reconstruct weight tensor from compressed form.
 
@@ -253,7 +253,8 @@ class TurboQuantTensor:
         flat = rows.reshape(-1)
         if self.pad:
             flat = flat[: flat.numel() - self.pad]
-        return flat.view(self.orig_shape).to(dtype)
+        result = flat.view(self.orig_shape).to(dtype)
+        return result.to(device) if device is not None else result
 
     def nbytes_packed(self) -> int:
         """Theoretical storage (bits packed: 3 bits/weight + 16 bits/block norm)."""
