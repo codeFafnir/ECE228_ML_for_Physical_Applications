@@ -67,10 +67,12 @@ class TQLinear(nn.Module):
         else:
             self.bias = None
 
+        self.register_buffer('_device_tracker', torch.zeros(1))
+
     @property
     def weight(self) -> torch.Tensor:
         # MultiheadAttention and other PyTorch internals access .weight directly
-        return self.tq.decompress(dtype=torch.float32)
+        return self.tq.decompress(dtype=torch.float32).to(self._device_tracker.device)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         W = self.tq.decompress(dtype=x.dtype).to(x.device)
@@ -120,9 +122,11 @@ class TQConv2d(nn.Module):
         else:
             self.bias = None
 
+        self.register_buffer('_device_tracker', torch.zeros(1))
+
     @property
     def weight(self) -> torch.Tensor:
-        return self.tq.decompress(dtype=torch.float32).view(self._weight_shape)
+        return self.tq.decompress(dtype=torch.float32).view(self._weight_shape).to(self._device_tracker.device)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         W = self.tq.decompress(dtype=x.dtype).view(self._weight_shape).to(x.device)
@@ -173,9 +177,11 @@ class TQConvTranspose2d(nn.Module):
         else:
             self.bias = None
 
+        self.register_buffer('_device_tracker', torch.zeros(1))
+
     @property
     def weight(self) -> torch.Tensor:
-        return self.tq.decompress(dtype=torch.float32).view(self._weight_shape)
+        return self.tq.decompress(dtype=torch.float32).view(self._weight_shape).to(self._device_tracker.device)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         W = self.tq.decompress(dtype=x.dtype).view(self._weight_shape).to(x.device)
