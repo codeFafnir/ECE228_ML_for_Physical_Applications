@@ -1,2 +1,4 @@
 *.pth
 graphify-out/
+*.zip
+kaggle_snr_quant_eval.py

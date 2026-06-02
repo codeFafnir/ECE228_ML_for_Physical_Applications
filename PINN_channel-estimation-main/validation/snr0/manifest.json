@@ -1,0 +1,22 @@
+{
+  "snr_db": 0,
+  "split": "val",
+  "train_ratio": 0.8,
+  "val_ratio": 0.1,
+  "random_seed": 42,
+  "n_val_samples": 987,
+  "n_total_samples": 9877,
+  "norm_max": 1.2778112448286613e-08,
+  "smomp_max": 1.2778112448286613e-08,
+  "accurate_max": 1.0136550727380462e-08,
+  "source_smomp": "initial_estimate_ls_snr0.npy",
+  "source_accurate": "3D_channel_15GHz_2x2_Pt50.npy",
+  "source_user_positions": "ue_positions_noisy.txt",
+  "rss_image_path": "Dataset/50_15GHz.jpg",
+  "channel_shape": [
+    16,
+    4,
+    576
+  ],
+  "dtype": "complex128"
+}

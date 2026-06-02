@@ -264,7 +264,7 @@ def _make_hessian_hook(
             return
 
         if layer_name not in hessians:
-            hessians[layer_name] = torch.zeros(X_flat.shape[1], X_flat.shape[1])
+            hessians[layer_name] = torch.zeros(X_flat.shape[1], X_flat.shape[1], device=X_flat.device)
             counts[layer_name] = 0
         hessians[layer_name] += X_flat.T @ X_flat
         counts[layer_name] += X_flat.shape[0]

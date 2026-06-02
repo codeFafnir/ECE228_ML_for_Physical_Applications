@@ -91,6 +91,19 @@ def _expand_group_params(
     return s_expanded[:, :d_in], z_expanded[:, :d_in]
 
 
+def uniform_quantize_weight(
+    W: torch.Tensor,
+    num_bits: int = 3,
+    group_size: int = 128,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Group-wise uniform quant without Hessian (fallback for very wide layers)."""
+    W = W.float().clone().cpu()
+    scales, zeros = compute_scales_and_zeros(W, num_bits, group_size)
+    s_col, z_col = _expand_group_params(scales, zeros, W.shape[1], group_size)
+    W_dequant = quantize_uniform(W, s_col, z_col, num_bits)
+    return W_dequant, scales, zeros
+
+
 def gptq_quantize_weight(
     W: torch.Tensor,
     H: torch.Tensor,
@@ -115,27 +128,21 @@ def gptq_quantize_weight(
         scales:       (d_out, n_groups) per-group scales
         zero_points:  (d_out, n_groups) per-group zero points
     """
-    W = W.float().clone()
-    H = H.float().clone()
+    W = W.float().clone().cpu()
+    H = H.float().clone().cpu()
     d_out, d_in = W.shape
 
     # 1. Dampen Hessian diagonal to avoid singularity
     damp = percdamp * torch.diag(H).mean()
     H.diagonal().add_(damp)
 
-    # 2. Compute Cholesky of H^{-1} (upper triangular, column-order access)
-    # GPTQ uses H^{-1} for error propagation. We compute it via Cholesky
-    # for numerical stability: H = L L^T  =>  H^{-1} = (L^{-T})(L^{-1})
-    # We need the (i,j) entry of H^{-1} for j > i, accessible from the
-    # upper Cholesky of H^{-1} directly.
+    # 2. Compute Cholesky of H^{-1} on CPU (MPS lacks linalg.inv/cholesky)
     try:
         H_inv = torch.linalg.inv(H)
-        # Upper Cholesky of H^{-1}: C such that C^T C = H^{-1}
-        H_inv = 0.5 * (H_inv + H_inv.T)  # enforce symmetry
+        H_inv = 0.5 * (H_inv + H_inv.T)
         H_inv.diagonal().clamp_(min=1e-8)
-        Hinv_chol = torch.linalg.cholesky(H_inv, upper=True)  # (d_in, d_in) upper
+        Hinv_chol = torch.linalg.cholesky(H_inv, upper=True)
     except torch.linalg.LinAlgError:
-        # Fallback: heavy damping + retry
         H.diagonal().add_(damp * 10)
         H_inv = torch.linalg.inv(H)
         H_inv = 0.5 * (H_inv + H_inv.T)

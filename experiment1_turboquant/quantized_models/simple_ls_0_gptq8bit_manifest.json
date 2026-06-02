@@ -1,0 +1,14 @@
+{
+  "name": "simple_ls_0_gptq8bit",
+  "num_bits": 8,
+  "group_size": 128,
+  "packed": true,
+  "source_checkpoint": "../simple_ls_0_val.pth",
+  "eval_nmse_db": -14.022976903736899,
+  "model_bytes_mb": 380.21,
+  "weight_compression_ratio": 3.84,
+  "files": {
+    "model": "simple_ls_0_gptq8bit.pth",
+    "state_dict": "simple_ls_0_gptq8bit_state_dict.pth"
+  }
+}

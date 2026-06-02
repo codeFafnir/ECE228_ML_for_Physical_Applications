@@ -2,17 +2,16 @@
 Option A: Pure GPTQ quantization of ImprovedPhysicsInformedUNet.
 
 Algorithm:
-  1. Register forward hooks on all quantizable layers (Linear, Conv2d, ConvTranspose2d).
-  2. Run calibration data through the model to accumulate per-layer Hessians.
-  3. Remove hooks.
-  4. For each layer in forward order: run gptq_quantize_weight(W, H).
-  5. Replace the layer with a GPTQ inference wrapper.
+  1. For each quantizable layer in forward order:
+     a. Register a forward hook on that layer only.
+     b. Run calibration data to accumulate the layer Hessian (on CPU).
+     c. Remove hook, run gptq_quantize_weight, replace layer.
+  2. Only one Hessian is live at a time — safe for large layers on MPS/Mac.
 
 Key implementation notes:
   - Conv2d inputs are unfolded to (batch*H_out*W_out, C_in*kH*kW) for Hessian.
   - ConvTranspose2d inputs are flattened to (batch*H*W, in_ch).
-  - Layers are processed sequentially to keep only one Hessian in memory at a time.
-  - Hessians are deleted immediately after each layer is quantized.
+  - Hessians accumulate on CPU to avoid MPS unified-memory OOM.
   - Skipped layers (LayerNorm, GroupNorm, etc.) match the TurboQuant skip list.
 """
 
@@ -26,8 +25,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from .gptq_core import gptq_quantize_weight
-from .gptq_layers import GPTQLinear, GPTQConv2d, GPTQConvTranspose2d
+from .gptq_core import gptq_quantize_weight, uniform_quantize_weight
+from .gptq_layers import (
+    GPTQLinear,
+    GPTQConv2d,
+    GPTQConvTranspose2d,
+    format_storage_report,
+)
 
 PINN_DIR = Path(__file__).parent.parent.parent / "PINN_channel-estimation-main"
 if str(PINN_DIR) not in sys.path:
@@ -45,6 +49,7 @@ _SKIP_MODULE_TYPES = (
 )
 
 _QUANTIZABLE_TYPES = (nn.Linear, nn.Conv2d, nn.ConvTranspose2d)
+_MAX_HESSIAN_DIM = 8192  # skip full GPTQ above this d_in (~256 MB Hessian)
 
 
 def _is_quantizable(module: nn.Module) -> bool:
@@ -119,10 +124,11 @@ def _make_hessian_hook(
         d_in = X_flat.shape[1]
 
         if layer_name not in hessians:
-            hessians[layer_name] = torch.zeros(d_in, d_in, dtype=torch.float32)
+            hessians[layer_name] = torch.zeros(d_in, d_in, dtype=torch.float32, device="cpu")
             counts[layer_name] = 0
 
-        hessians[layer_name] += X_flat.T @ X_flat
+        x_cpu = X_flat.cpu()
+        hessians[layer_name] += x_cpu.T @ x_cpu
         counts[layer_name] += X_flat.shape[0]
 
     return hook_fn
@@ -135,107 +141,164 @@ def _finalize_hessian(H: torch.Tensor, n: int) -> torch.Tensor:
     return H
 
 
+def _layer_input_dim(module: nn.Module) -> int:
+    if isinstance(module, nn.Linear):
+        return module.in_features
+    if isinstance(module, nn.Conv2d):
+        kh, kw = module.kernel_size
+        return module.in_channels * kh * kw
+    if isinstance(module, nn.ConvTranspose2d):
+        return module.in_channels
+    return 0
+
+
+def _weight_as_2d(child: nn.Module) -> torch.Tensor:
+    if isinstance(child, nn.Conv2d):
+        return child.weight.data.float().view(child.weight.shape[0], -1)
+    if isinstance(child, nn.ConvTranspose2d):
+        return child.weight.data.float().view(child.weight.shape[0], -1).T
+    return child.weight.data.float()
+
+
+def _make_replacement(
+    child: nn.Module,
+    W_dequant: torch.Tensor,
+    scales: torch.Tensor,
+    zeros: torch.Tensor,
+    num_bits: int,
+    group_size: int,
+    packed: bool,
+) -> nn.Module:
+    g = min(group_size, W_dequant.shape[1])
+    if isinstance(child, nn.Conv2d):
+        return GPTQConv2d.from_conv(child, W_dequant, scales, zeros, num_bits, g, packed)
+    if isinstance(child, nn.ConvTranspose2d):
+        W_dequant_orig = W_dequant.T.reshape(child.weight.shape)
+        return GPTQConvTranspose2d.from_conv_transpose(
+            child, W_dequant_orig, scales, zeros, num_bits, g, packed
+        )
+    return GPTQLinear.from_linear(child, W_dequant, scales, zeros, num_bits, g, packed)
+
+
+def _quantize_one_layer(
+    child: nn.Module,
+    H: torch.Tensor,
+    num_bits: int,
+    group_size: int,
+    block_size: int,
+    percdamp: float,
+    packed: bool,
+) -> nn.Module:
+    """Run GPTQ on a single layer and return its inference wrapper."""
+    if isinstance(child, nn.Conv2d):
+        W_2d = child.weight.data.float().view(child.weight.shape[0], -1)
+        W_dequant, scales, zeros = gptq_quantize_weight(
+            W_2d, H, num_bits, min(group_size, W_2d.shape[1]), block_size, percdamp
+        )
+        return GPTQConv2d.from_conv(
+            child, W_dequant, scales, zeros, num_bits,
+            min(group_size, W_2d.shape[1]), packed,
+        )
+
+    if isinstance(child, nn.ConvTranspose2d):
+        W_2d = child.weight.data.float().view(child.weight.shape[0], -1).T
+        W_dequant, scales, zeros = gptq_quantize_weight(
+            W_2d, H, num_bits, min(group_size, W_2d.shape[1]), block_size, percdamp
+        )
+        W_dequant_orig = W_dequant.T.reshape(child.weight.shape)
+        return GPTQConvTranspose2d.from_conv_transpose(
+            child, W_dequant_orig, scales, zeros, num_bits,
+            min(group_size, W_2d.shape[1]), packed,
+        )
+
+    W_2d = child.weight.data.float()
+    W_dequant, scales, zeros = gptq_quantize_weight(
+        W_2d, H, num_bits, min(group_size, W_2d.shape[1]), block_size, percdamp
+    )
+    return GPTQLinear.from_linear(
+        child, W_dequant, scales, zeros, num_bits,
+        min(group_size, W_2d.shape[1]), packed,
+    )
+
+
 def gptq_quantize_pinn(
     model: nn.Module,
     cal_loader: DataLoader,
-    num_bits: int = 3,
+    num_bits: int = 4,
     group_size: int = 128,
     block_size: int = 128,
     percdamp: float = 0.01,
     device: torch.device = torch.device("cpu"),
     inplace: bool = False,
     verbose: bool = True,
+    packed: bool = True,
+    model_fp32: nn.Module | None = None,
 ) -> nn.Module:
     """
     Apply GPTQ to all quantizable layers of the PINN model.
 
-    Args:
-        model:      Trained FP32 model (ImprovedPhysicsInformedUNet).
-        cal_loader: DataLoader yielding (smomp, accurate, rss) for calibration.
-        num_bits:   Target bit-width (3 recommended).
-        group_size: Columns per quantization group.
-        block_size: GPTQ lazy block size (cols processed together).
-        percdamp:   Hessian diagonal damping fraction.
-        device:     Device for calibration forward passes.
-        inplace:    If False, deepcopy the model first.
-        verbose:    Print per-layer progress.
-
-    Returns:
-        Model with quantizable layers replaced by GPTQ wrappers.
+    packed=True (default): uint8-packed storage (4-bit nibble or 8-bit).
+    Requires num_bits in {4, 8} when packed=True.
     """
+    if packed and num_bits not in (4, 8):
+        raise ValueError("packed storage requires num_bits in {4, 8}")
     if not inplace:
         model = copy.deepcopy(model)
     model.eval()
     model.to(device)
 
     layers = _collect_quantizable_layers(model)
+    n_cal_batches = len(cal_loader)
     if verbose:
         print(f"  Found {len(layers)} quantizable layers")
+        print(f"  Layer-wise calibration: {n_cal_batches} batches per layer")
+        print(f"  Storage: {'packed int' + str(num_bits) if packed else 'fp32 dequant'}")
 
-    # ---- Phase 1: Accumulate Hessians via forward hooks ----
-    hessians: dict[str, torch.Tensor] = {}
-    counts: dict[str, int] = {}
-    hooks = []
-
+    # ---- Layer-wise: calibrate one Hessian at a time, then quantize ----
     for full_name, parent, child, child_name in layers:
-        h = child.register_forward_hook(
+        d_in = _layer_input_dim(child)
+        if d_in > _MAX_HESSIAN_DIM:
+            W_2d = _weight_as_2d(child)
+            W_dequant, scales, zeros = uniform_quantize_weight(
+                W_2d, num_bits, min(group_size, W_2d.shape[1])
+            )
+            replacement = _make_replacement(
+                child, W_dequant, scales, zeros, num_bits,
+                min(group_size, W_2d.shape[1]), packed,
+            )
+            setattr(parent, child_name, replacement)
+            if verbose:
+                print(f"  [uniform] {full_name:50s} d_in={d_in} -> {num_bits}-bit")
+            continue
+
+        hessians: dict[str, torch.Tensor] = {}
+        counts: dict[str, int] = {}
+        hook = child.register_forward_hook(
             _make_hessian_hook(hessians, counts, full_name, type(child))
         )
-        hooks.append(h)
 
-    if verbose:
-        print(f"  Running {len(list(cal_loader))} calibration batches ...")
+        with torch.no_grad():
+            for smomp, _accurate, rss in cal_loader:
+                model(smomp.to(device), rss.to(device))
 
-    with torch.no_grad():
-        for smomp, accurate, rss in cal_loader:
-            model(smomp.to(device), rss.to(device))
+        hook.remove()
 
-    for h in hooks:
-        h.remove()
-
-    if verbose:
-        print(f"  Calibration done. Quantizing layers ...")
-
-    # ---- Phase 2: Layer-wise GPTQ ----
-    for full_name, parent, child, child_name in layers:
         if full_name not in hessians:
             if verbose:
                 print(f"  SKIP (no Hessian): {full_name}")
             continue
 
         H = _finalize_hessian(hessians.pop(full_name), counts.pop(full_name))
-        H = H.to(device)
-
-        if isinstance(child, nn.Conv2d):
-            # Reshape weight to (out_ch, in_ch*kH*kW)
-            W_2d = child.weight.data.float().view(child.weight.shape[0], -1)
-            W_dequant, scales, zeros = gptq_quantize_weight(
-                W_2d, H, num_bits, min(group_size, W_2d.shape[1]), block_size, percdamp
-            )
-            replacement = GPTQConv2d.from_conv(child, W_dequant, scales, zeros)
-
-        elif isinstance(child, nn.ConvTranspose2d):
-            # Weight: (in_ch, out_ch, kH, kW) -> transpose to (out_ch*kH*kW, in_ch)
-            # so d_out=out_ch*kH*kW, d_in=in_ch, matching H from (batch*H*W, in_ch) activations.
-            W_2d = child.weight.data.float().view(child.weight.shape[0], -1).T  # (out_ch*kH*kW, in_ch)
-            W_dequant, scales, zeros = gptq_quantize_weight(
-                W_2d, H, num_bits, min(group_size, W_2d.shape[1]), block_size, percdamp
-            )
-            # Transpose back to (in_ch, out_ch*kH*kW) -> reshape to original weight shape
-            W_dequant_orig = W_dequant.T.reshape(child.weight.shape)
-            replacement = GPTQConvTranspose2d.from_conv_transpose(child, W_dequant_orig, scales, zeros)
-
-        else:  # Linear
-            W_2d = child.weight.data.float()  # already (out, in)
-            W_dequant, scales, zeros = gptq_quantize_weight(
-                W_2d, H, num_bits, min(group_size, W_2d.shape[1]), block_size, percdamp
-            )
-            replacement = GPTQLinear.from_linear(child, W_dequant, scales, zeros)
-
+        replacement = _quantize_one_layer(
+            child, H, num_bits, group_size, block_size, percdamp, packed
+        )
         setattr(parent, child_name, replacement)
-        del H  # free Hessian memory immediately
+        del H
 
         if verbose:
             print(f"  [GPTQ] {full_name:50s} {list(child.weight.shape)} -> {num_bits}-bit")
+
+    if verbose and model_fp32 is not None:
+        print("\n" + format_storage_report(model_fp32, model))
 
     return model
