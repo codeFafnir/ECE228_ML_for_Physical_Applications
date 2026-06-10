@@ -2,3 +2,13 @@
 graphify-out/
 *.zip
 kaggle_snr_quant_eval.py
+report/
+ECE228.pdf
+
+# Large binary data files — too big for GitHub (>100 MB)
+experiment2_PhysicsInformedKnowledgeDistillation/teacher_cache/*.npy
+experiment2_PhysicsInformedKnowledgeDistillation/holdout/holdout_smomp.npy
+experiment2_PhysicsInformedKnowledgeDistillation/holdout/holdout_accurate.npy
+__pycache__/
+**/__pycache__/
+*.pyc

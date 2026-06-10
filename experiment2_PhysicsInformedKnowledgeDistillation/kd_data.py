@@ -63,7 +63,9 @@ class KDCachedDataset(Dataset):
         split: str,
     ):
         self.base = base_dataset
-        cache_path = Path(cache_dir)
+        # Resolve to absolute path before calibration_data's os.chdir(PINN_DIR)
+        # changes the working directory during data bundle initialization.
+        cache_path = Path(cache_dir).resolve()
 
         out_file  = cache_path / f"{split}_out.npy"
         feat_file = cache_path / f"{split}_feat.npy"

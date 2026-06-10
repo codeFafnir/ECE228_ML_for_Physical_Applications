@@ -1,0 +1,18 @@
+{
+  "n_holdout_samples": 790,
+  "n_total_samples": 9877,
+  "train_ratio": 0.8,
+  "val_ratio": 0.1,
+  "random_seed": 42,
+  "norm_max": 1.2778112448286613e-08,
+  "source_smomp": "initial_estimate_ls_snr0.npy",
+  "source_accurate": "3D_channel_15GHz_2x2_Pt50.npy",
+  "source_user_positions": "ue_positions_noisy.txt",
+  "channel_shape": [
+    16,
+    4,
+    576
+  ],
+  "dtype": "complex128",
+  "split": "test"
+}

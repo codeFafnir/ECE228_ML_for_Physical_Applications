@@ -29,6 +29,7 @@ Example (synthetic smoke-test):
 """
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -146,6 +147,9 @@ def train(args: argparse.Namespace) -> None:
     ).to(device)
 
     # ── Data ─────────────────────────────────────────────────────────────────
+    # Resolve paths before calibration_data's os.chdir(PINN_DIR) fires.
+    args.cache_dir = str(Path(args.cache_dir).resolve())
+
     if args.synthetic:
         print("Synthetic data mode (smoke-test)")
         train_ds = _SyntheticKDDataset(n=args.n_synthetic, seed=42)
@@ -169,8 +173,40 @@ def train(args: argparse.Namespace) -> None:
 
     # ── Training ──────────────────────────────────────────────────────────────
     best_val_nmse = float("inf")
-    save_path = Path(args.save_dir) / f"student_{preset}.pth"
-    Path(args.save_dir).mkdir(parents=True, exist_ok=True)
+    # Resolve before calibration_data's os.chdir(PINN_DIR) changes the CWD.
+    save_dir = Path(args.save_dir).resolve()
+    save_dir.mkdir(parents=True, exist_ok=True)
+    save_path = save_dir / f"student_{preset}.pth"
+
+    LOG_EVERY = 5   # print full summary every N epochs
+    n_batches  = len(train_loader)
+    history: list[dict] = []  # accumulate per-epoch stats for the summary block
+
+    _sep  = "─" * 78
+    _sep2 = "═" * 78
+
+    def _print_epoch_summary(block: list[dict]) -> None:
+        """Print a formatted 5-epoch summary block."""
+        first, last = block[0]["epoch"], block[-1]["epoch"]
+        print(f"\n  ┌─ Epochs {first}–{last} summary {'─'*(47 - len(str(first)) - len(str(last)))}")
+        print(f"  │  {'Epoch':>6}  {'Loss':>8}  {'NMSE':>8}  {'KD':>8}  {'Phys':>7}  {'Feat':>7}  {'Val NMSE':>9}  {'LR':>8}  {'Time':>6}")
+        print(f"  │  {_sep}")
+        for e in block:
+            saved = " ★" if e["saved"] else ""
+            print(
+                f"  │  {e['epoch']:>6}  "
+                f"{e['total']:>8.4f}  "
+                f"{e['nmse']:>8.4f}  "
+                f"{e['kd_soft']:>8.5f}  "
+                f"{e['physical']:>7.4f}  "
+                f"{e['xattn_feat']:>7.5f}  "
+                f"{e['val_nmse']:>8.2f}dB  "
+                f"{e['lr']:>8.2e}  "
+                f"{e['elapsed']:>5.1f}s"
+                f"{saved}"
+            )
+        best_in_block = min(block, key=lambda x: x["val_nmse"])
+        print(f"  └─ Best val NMSE in block: {best_in_block['val_nmse']:.2f} dB (epoch {best_in_block['epoch']})  |  overall best: {best_val_nmse:.2f} dB\n")
 
     for epoch in range(1, args.epochs + 1):
         student.train()
@@ -179,7 +215,7 @@ def train(args: argparse.Namespace) -> None:
         }
         t0 = time.perf_counter()
 
-        for batch in train_loader:
+        for batch_idx, batch in enumerate(train_loader):
             smomp, accurate, rss, t_out, t_feat = [x.to(device) for x in batch]
 
             optimizer.zero_grad()
@@ -197,6 +233,22 @@ def train(args: argparse.Namespace) -> None:
             for k, v in comps.items():
                 epoch_losses[k].append(v)
 
+            # In-epoch progress bar (updates in-place every ~10% of batches)
+            report_every = max(1, n_batches // 10)
+            if (batch_idx + 1) % report_every == 0 or (batch_idx + 1) == n_batches:
+                pct  = (batch_idx + 1) / n_batches
+                done = int(pct * 20)
+                bar  = "█" * done + "░" * (20 - done)
+                avg_loss = float(np.mean(epoch_losses["total"]))
+                elapsed_so_far = time.perf_counter() - t0
+                print(
+                    f"\r  Epoch {epoch:3d}/{args.epochs}  [{bar}] "
+                    f"{batch_idx+1:4d}/{n_batches}  "
+                    f"loss={avg_loss:.4f}  "
+                    f"{elapsed_so_far:.0f}s",
+                    end="", flush=True,
+                )
+
         scheduler.step()
 
         # Validation
@@ -204,20 +256,12 @@ def train(args: argparse.Namespace) -> None:
         elapsed  = time.perf_counter() - t0
 
         means = {k: float(np.mean(v)) for k, v in epoch_losses.items()}
-        print(
-            f"Epoch {epoch:3d}/{args.epochs}  "
-            f"loss={means['total']:.4f} "
-            f"(nmse={means['nmse']:.4f} "
-            f"kd={means['kd_soft']:.4f} "
-            f"phys={means['physical']:.4f} "
-            f"feat={means['xattn_feat']:.4f})  "
-            f"val_nmse={val_nmse:.2f}dB  "
-            f"lr={scheduler.get_last_lr()[0]:.2e}  "
-            f"t={elapsed:.1f}s"
-        )
 
+        # Checkpoint if improved
+        saved = False
         if val_nmse < best_val_nmse:
             best_val_nmse = val_nmse
+            saved = True
             torch.save(
                 {
                     "preset": preset,
@@ -230,10 +274,47 @@ def train(args: argparse.Namespace) -> None:
                 },
                 save_path,
             )
-            print(f"  ✓ Saved best checkpoint (val_nmse={val_nmse:.2f} dB) → {save_path}")
 
-    print(f"\nTraining done. Best val NMSE: {best_val_nmse:.2f} dB")
-    print(f"Checkpoint: {save_path}")
+        # Accumulate stats
+        history.append({
+            "epoch":      epoch,
+            "total":      means["total"],
+            "nmse":       means["nmse"],
+            "kd_soft":    means["kd_soft"],
+            "physical":   means["physical"],
+            "xattn_feat": means["xattn_feat"],
+            "val_nmse":   val_nmse,
+            "lr":         scheduler.get_last_lr()[0],
+            "elapsed":    elapsed,
+            "saved":      saved,
+        })
+
+        # Print summary every LOG_EVERY epochs (or at the very last epoch)
+        if epoch % LOG_EVERY == 0 or epoch == args.epochs:
+            print()  # newline after the in-epoch progress bar
+            block = history[-LOG_EVERY:]  # last N epochs
+            _print_epoch_summary(block)
+            if saved:
+                print(f"  ★  New best checkpoint saved → {save_path}  (val_nmse={val_nmse:.2f} dB)\n")
+        else:
+            # Just a compact tick on the same line
+            star = " ★" if saved else ""
+            print(
+                f"\r  Epoch {epoch:3d}/{args.epochs}  "
+                f"loss={means['total']:.4f}  val={val_nmse:.2f}dB  "
+                f"t={elapsed:.0f}s{star}          "
+            )
+
+    # Save full training history alongside the checkpoint for plotting.
+    history_path = save_dir / f"training_history_{preset}.json"
+    with open(history_path, "w", encoding="utf-8") as f:
+        json.dump({"preset": preset, "history": history}, f, indent=2)
+
+    print(_sep2)
+    print(f"  Training complete.  Best val NMSE: {best_val_nmse:.2f} dB")
+    print(f"  Checkpoint:  {save_path}")
+    print(f"  History:     {history_path}")
+    print(_sep2)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

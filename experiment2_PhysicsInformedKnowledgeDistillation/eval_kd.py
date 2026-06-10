@@ -93,7 +93,7 @@ def _evaluate(
 
 
 def _load_student(preset: str, checkpoint_dir: str, device: torch.device) -> Optional[nn.Module]:
-    path = Path(checkpoint_dir) / f"student_{preset}.pth"
+    path = Path(checkpoint_dir).resolve() / f"student_{preset}.pth"
     if not path.exists():
         return None
     ckpt = torch.load(path, map_location="cpu")
@@ -187,6 +187,8 @@ def main() -> None:
     args = parser.parse_args()
 
     device = _select_device(args.device)
+    # Resolve before calibration_data's os.chdir(PINN_DIR) changes CWD.
+    args.checkpoint_dir = str(Path(args.checkpoint_dir).resolve())
     print(f"Evaluation device: {device}\n")
 
     # ── Build val loader ──────────────────────────────────────────────────────
