@@ -34,7 +34,7 @@ python init_estimation.py \
 
 ### Step 3 — Train the PINN
 
-Edit the `config` dict at the bottom of [`train.py`](./train.py) so that
+Edit the `config` dict at the bottom of [`train.py`](./PINN_channel-estimation-main/train.py) so that
 `smomp_file` points at the initial estimate from Step 2 and `accurate_file`
 points at the ground-truth tensor from Step 1. Then:
 
