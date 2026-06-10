@@ -1,6 +1,16 @@
 # ECE228_ML_for_Physical_Applications
 
-## Dataset Generation and Baseline PINN Training
+We study compressing a large PINN for mmWave channel estimation that fuses
+pilot-based initial estimates with an RSS map. The baseline (358.9M params,
+1.4 GB) is unsuitable for edge deployment, so we explore three approaches:
+quantization-aware mixed precision (QAT), post-training quantization with
+Hadamard rotation (H-GPTQ), and physics-guided knowledge distillation (PG-KD).
+On a Boston ray-tracing benchmark, these methods give large memory and speed
+gains while retaining or improving NMSE performance.
+
+## Steps to reproduce results
+
+### Dataset Generation and Baseline PINN Training
 
 First, navigate to the `PINN_channel-estimation-main/` folder.
 
@@ -8,7 +18,7 @@ First, navigate to the `PINN_channel-estimation-main/` folder.
 cd PINN_channel-estimation-main
 ```
 
-### Step 1 — Build ground-truth channel tensors from the ray-tracing CSVs
+#### Step 1 — Build ground-truth channel tensors from the ray-tracing CSVs
 
 `make_correct_channels.py` parses the Wireless Insite data to produce a `(num_snapshots, D, Nr, Nt)` complex tensor. Run the following command:
 
@@ -20,7 +30,7 @@ python make_correct_channels.py \
     --pt 50 --bw 4e8
 ```
 
-### Step 2 — Generate the initial LS-OFDM channel estimates
+#### Step 2 — Generate the initial LS-OFDM channel estimates
 
 For a given `(SNR, Np)` operating point, `init_estimation.py` simulates
 OFDM pilot transmission at `N_subcarriers / pilot_spacing` subcarriers,
@@ -36,7 +46,7 @@ python init_estimation.py \
     --pilot-spacing 4
 ```
 
-### Step 3 — Train the PINN
+#### Step 3 — Train the PINN
 
 Edit the `config` dict at the bottom of [`train.py`](./PINN_channel-estimation-main/train.py) so that
 `smomp_file` points at the initial estimate from Step 2 and `accurate_file`
