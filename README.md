@@ -4,6 +4,10 @@
 
 First, navigate to the `PINN_channel-estimation-main/` folder.
 
+```bash
+cd PINN_channel-estimation-main
+```
+
 ### Step 1 — Build ground-truth channel tensors from the ray-tracing CSVs
 
 `make_correct_channels.py` parses the Wireless Insite data to produce a `(num_snapshots, D, Nr, Nt)` complex tensor. Run the following command:
