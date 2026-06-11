@@ -65,7 +65,7 @@ the same.
 
 ---
 
-## Experiment 1: QAT — Physics-Shielded Mixed-Precision Quantization
+## Experiment 1: QAT — Physics-Shielded Mixed-Precision Quantization Aware Training
 
 All scripts live in `experiment3_qat/`. 
 
