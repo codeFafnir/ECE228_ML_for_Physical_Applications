@@ -67,7 +67,7 @@ the same.
 
 ## Experiment 1: QAT — Physics-Shielded Mixed-Precision Quantization
 
-All scripts live in `Test3/`. 
+All scripts live in `experiment3_qat/`. 
 
 ### Repository layout expected by train_qat.py
 
@@ -81,7 +81,7 @@ project_root/
 │   ├── find_in_map.py                    # imported by train_qat.py
 │   └── Dataset/
 │       └── 50_15GHz.jpg
-└── Test3/
+└── experiment3_qat/
     ├── train_qat.py                      # QAT training script
     └── Model.py                          
 ```
@@ -118,7 +118,7 @@ Training uses a three-phase schedule to stabilize quantization ranges:
 ### Running QAT locally
 
 ```bash
-cd Test3/
+cd experiment3_qat/
 python train_qat.py
 ```
 
@@ -131,7 +131,7 @@ The script will:
    (HistogramObserver for activations).
 4. Fine-tune for 100 epochs using the three-phase schedule.
 5. Print an in-memory live evaluation (fake-quant on GPU) immediately after training.
-6. Export and save `pinn_qat_best_val.pth` and `pinn_int8.pth` to `Test3/`.
+6. Export and save `pinn_qat_best_val.pth` and `pinn_int8.pth` to `experiment3_qat/`.
 7. Print a full side-by-side comparison table of FP32 vs INT8 NMSE, latency,
    disk size, and parameter footprint.
 
@@ -162,7 +162,7 @@ same because they are SNR-independent.
 
 ### Outputs
 
-All outputs are written to `Test3/` (same directory as `train_qat.py`).
+All outputs are written to `experiment3_qat/` (same directory as `train_qat.py`).
 
 | File | Contents |
 |------|----------|
