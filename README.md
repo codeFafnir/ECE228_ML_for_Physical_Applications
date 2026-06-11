@@ -115,7 +115,7 @@ Training uses a three-phase schedule to stabilize quantization ranges:
 | 2 — Range freeze | `freeze_bn_epoch` → `freeze_obs_epoch` | OFF | ON | Ranges locked, weights adapt to fixed grid |
 | 3 — FP32 polish | `freeze_obs_epoch` → end | OFF | OFF | Final fine-tuning without rounding noise |
 
-### Running QAT locally
+### Running QAT on Colab G4
 
 ```bash
 cd experiment3_qat/
